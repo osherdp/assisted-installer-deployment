@@ -30,6 +30,8 @@ import tqdm
 from fuzzywuzzy import fuzz
 from tabulate import tabulate
 
+from .logs_collectors import LogsCollector, LocalDirLogsCollector, MinioLogsCollector
+
 DEFAULT_DAYS_TO_HANDLE = 30
 
 FIELD_LABELS = "labels"
@@ -246,6 +248,7 @@ class Signature(abc.ABC):
     def __init__(
         self,
         jira_client,
+        logs_collector: LogsCollector,
         issue_key,
         comment_identifying_string,
         dry_run_file=None,
@@ -253,6 +256,7 @@ class Signature(abc.ABC):
         old_comment_string=None,
     ):
         self._jira_client = jira_client
+        self._logs_collector = logs_collector
         self._identifing_string = comment_identifying_string
         self._old_identifing_string = old_comment_string
         self.dry_run_file = dry_run_file
@@ -365,25 +369,11 @@ class Signature(abc.ABC):
     def _generate_table_for_report(hosts):
         return tabulate(hosts, headers="keys", tablefmt="jira") + "\n"
 
-    @staticmethod
-    def _logs_url_to_api(url):
-        """
-        the log server has two formats for the url
-        - URL for the UI  - http://assisted-logs-collector.usersys.redhat.com/#/2020-10-15_19:10:06_347ce6e8-bb4d-4751-825f-5e92e24da0d9/
-        - URL for the API - http://assisted-logs-collector.usersys.redhat.com/files/2020-10-15_19:10:06_347ce6e8-bb4d-4751-825f-5e92e24da0d9/
-        This function will return an API URL, regardless of which URL is supplied
-        """
-        return re.sub(r"(http://[^/]*/)#(/.*)", r"\1files\2", url)
+    def _logs_url_to_api(self, url):
+        return self._logs_collector.logs_url_to_api(url)
 
-    @staticmethod
-    def _logs_url_to_ui(url):
-        """
-        the log server has two formats for the url
-        - URL for the UI  - http://assisted-logs-collector.usersys.redhat.com/#/2020-10-15_19:10:06_347ce6e8-bb4d-4751-825f-5e92e24da0d9/
-        - URL for the API - http://assisted-logs-collector.usersys.redhat.com/files/2020-10-15_19:10:06_347ce6e8-bb4d-4751-825f-5e92e24da0d9/
-        This function will return an UI URL, regardless of which URL is supplied
-        """
-        return re.sub(r"(http://[^/]*/)files(/.*)", r"\1#\2", url)
+    def _logs_url_to_ui(self, url):
+        return self._logs_collector.logs_url_to_ui(url)
 
     @staticmethod
     def _get_hostname(host):
@@ -2432,6 +2422,7 @@ def get_ticket_browse_url(issue_key):
 
 def process_issues(
     jira_client,
+    logs_collector,
     issues,
     should_reevaluate: bool,
     only_specific_signatures,
@@ -2458,6 +2449,7 @@ def process_issues(
 
         process_ticket_with_signatures(
             jira_client,
+            logs_collector,
             ticket_logs_url,
             issue.key,
             should_reevaluate=should_reevaluate,
@@ -2477,6 +2469,11 @@ def main(args):
         validate=True,
     )
 
+    if args.logs_collector == "local-dir":
+        logs_collector = LocalDirLogsCollector()
+    elif args.logs_collector == "minio":
+        logs_collector = MinioLogsCollector()
+
     issues = get_issues(
         jira_client,
         issue=args.issue,
@@ -2490,6 +2487,7 @@ def main(args):
             logger.info(f"Run `tail -f {dry_run_file.name}` to view dry run output in real time")
             process_issues(
                 jira_client,
+                logs_collector,
                 issues,
                 should_reevaluate=args.update,
                 only_specific_signatures=args.update_signature,
@@ -2500,6 +2498,7 @@ def main(args):
 
     process_issues(
         jira_client,
+        logs_collector,
         issues,
         should_reevaluate=args.update,
         only_specific_signatures=args.update_signature,
@@ -2513,6 +2512,7 @@ def format_time(time_str):
 
 def process_ticket_with_signatures(
     jira_client,
+    logs_collector,
     ticket_logs_url,
     issue_key,
     only_specific_signatures,
@@ -2534,6 +2534,7 @@ def process_ticket_with_signatures(
         logger.debug(f"Running signature {signature_class.__name__}")
         signature_class(
             jira_client=jira_client,
+            logs_collector=logs_collector,
             should_reevaluate=True if only_specific_signatures is not None else should_reevaluate,
             issue_key=issue_key,
             dry_run_file=dry_run_file,
@@ -2567,6 +2568,17 @@ def parse_args():
         default=os.environ.get("JIRA_ACCESS_TOKEN"),
         required=False,
         help="PAT (personal access token) for accessing Jira",
+    )
+
+    parser.add_argument(
+        "--logs-collector",
+        default=os.environ.get("LOGS_COLLECTOR", "local-dir"),
+        required=False,
+        choices=("local-dir", "minio"),
+        help="The used log collections method. The old (soon to be deprecated) "
+        "is 'local-dir' (where files are stored via NFS mount and exposed with "
+        "an nginx-based file-browser). The newer method is 'minio' (where files "
+        "are stored and accessed via minio instance)",
     )
 
     selectors_group = parser.add_argument_group(title="Issues selection")

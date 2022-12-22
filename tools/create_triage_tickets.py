@@ -4,6 +4,7 @@
 # For each cluster, which does not already has a triaging Jira ticket, it creates one
 
 import argparse
+import enum
 import logging
 import os
 import sys
@@ -27,9 +28,6 @@ from utils import (
 )
 
 DEFAULT_DAYS_TO_HANDLE = 30
-
-
-LOGS_COLLECTOR = "http://assisted-logs-collector.usersys.redhat.com"
 JIRA_SUMMARY = "cloud.redhat.com failure: {failure_id}"
 
 
@@ -150,6 +148,16 @@ if __name__ == "__main__":
         default=os.environ.get("JIRA_ACCESS_TOKEN"),
         required=False,
         help="PAT (personal access token) for accessing Jira",
+    )
+    parser.add_argument(
+        "--logs-collector",
+        default=os.environ.get("LOGS_COLLECTOR", "local-dir"),
+        required=False,
+        choices=("local-dir", "minio"),
+        help="The used log collections method. The old (soon to be deprecated) "
+        "is 'local-dir' (where files are stored via NFS mount and exposed with "
+        "an nginx-based file-browser). The newer method is 'minio' (where files "
+        "are stored and accessed via minio instance)",
     )
     parser.add_argument(
         "-a",
